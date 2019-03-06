@@ -9,22 +9,27 @@ import numpy as np
 from sklearn.preprocessing import OneHotEncoder
 from torch import nn
 import torch
-from torch.utils.data import TensorDataset, DataLoader
 import torch.nn.functional as F
-
+from random import shuffle
 
 #############################Read in and process input data#################
 dino_names = open('dinos.txt','r').read()
 dino_names = dino_names.lower().split('\n')
-#Use a period as end of name token
-dino_names = [dino_name+"." for dino_name in dino_names]
-chars = list(set(''.join(dino_names)))
+
+##Shuffle the list of names##
+shuffle(dino_names)
+
+#Use a period as end of name token .Join all names into a single mass of text
+dino_names = '.'.join(dino_names)
+
+
+chars = list(set(dino_names))
 data_size, vocab_size = len(dino_names),len(chars)
 print('There are %d total characters and %d unique characters in the data.'%(data_size,vocab_size))
 
 ####Longest dinosaur name####
-longest_name   = max(dino_names,key=len)
-longest_name_len = len(longest_name)
+#longest_name   = max(dino_names,key=len)
+#longest_name_len = len(longest_name)
 
 
 
@@ -34,14 +39,20 @@ char_to_idx = {ch:i for i,ch in enumerate(sorted(chars))}
 ix_to_char =  {i:ch for i,ch in enumerate(sorted(chars))}
 print(ix_to_char)
 
+
+###Convert dino name text to encoded array###
+dino_names_array = np.array([char_to_idx[char] for char in dino_names ])
+
+
+
 ###Using padding to ensure each dino name has same length of 27###
 
-dino_name_deficit = [27 - len(dino) for dino in dino_names]
-dino_names = [dino_name + '.'*extra_len for dino_name,extra_len in zip(dino_names,dino_name_deficit)]
+#dino_name_deficit = [27 - len(dino) for dino in dino_names]
+#dino_names = [dino_name + '.'*extra_len for dino_name,extra_len in zip(dino_names,dino_name_deficit)]
 
 ###Encoded version of dino names
-encoded_dino_names = list(map(lambda x: [char_to_idx[char] for char in x], dino_names))
-encoded_dino_array = np.array(encoded_dino_names)
+#encoded_dino_names = list(map(lambda x: [char_to_idx[char] for char in x], dino_names))
+#encoded_dino_array = np.array(encoded_dino_names)
 
 ####Create one hot encoder for each character in the dictionary###
 one_hot_encoder = OneHotEncoder()
@@ -49,29 +60,29 @@ one_hot_encoder.fit(np.array(list(char_to_idx.values())).reshape(-1,1))
 #one_hot_encoder.transform(np.array([1,2,3]).reshape(-1,1)).toarray()
 
 ##Target is obtained by shifting the inputs forward by 1 time step###
-input_arr = encoded_dino_array
-target_arr =  np.column_stack((input_arr[:,1:],np.zeros(input_arr.shape[0]))).astype(int)
+#input_arr = encoded_dino_array
+#target_arr =  np.column_stack((input_arr[:,1:],np.zeros(input_arr.shape[0]))).astype(int)
 
 #Create training and validation data
-val_idx = int(len(input_arr)*(1-0.1))
-train_X,train_y = input_arr[:val_idx],target_arr[:val_idx]
-valid_X,valid_y = input_arr[val_idx:],target_arr[val_idx:]
+#val_idx = int(len(input_arr)*(1-0.1))
+#train_X,train_y = input_arr[:val_idx],target_arr[:val_idx]
+#valid_X,valid_y = input_arr[val_idx:],target_arr[val_idx:]
 
 
 
 
-print("\t\t Feature Shapes:")
-print("Train_set:\t\t{}".format(train_X.shape))
-print("\nValidation Set: \t{}".format(valid_X.shape))
+#print("\t\t Feature Shapes:")
+#print("Train_set:\t\t{}".format(train_X.shape))
+#print("\nValidation Set: \t{}".format(valid_X.shape))
 
 ###DataLoaders and Batching
-train_data = TensorDataset(torch.from_numpy(train_X),torch.from_numpy(train_y))
-valid_data = TensorDataset(torch.from_numpy(valid_X),torch.from_numpy(valid_y))
+#train_data = TensorDataset(torch.from_numpy(train_X),torch.from_numpy(train_y))
+#valid_data = TensorDataset(torch.from_numpy(valid_X),torch.from_numpy(valid_y))
 
-batch_size = 2
+#batch_size = 2
 
-train_loader = DataLoader(train_data,batch_size=batch_size)
-valid_loader = DataLoader(valid_data,batch_size=batch_size)
+#train_loader = DataLoader(train_data,batch_size=batch_size)
+#valid_loader = DataLoader(valid_data,batch_size=batch_size)
 
 
 # check if GPU is available
@@ -80,26 +91,47 @@ train_on_gpu = torch.cuda.is_available()
 ###################Function to geenrate batches of inputs and targets#######################
 ##########Function borrowed from Udacity - Intro to Pytorch course##########################
 
-def get_batches(input_arr,target_arr, batch_size = 1 ):
+def get_batches(arr, batch_size, seq_length):
+    
     
     '''Create a generator that returns batches of size
-       batch_size x 27(seq_length) from arr.
+       batch_size x seq_length from arr.
        
        Arguments
        ---------
-       input_arr & target_arr: Array you want to make batches from
-       batch_size: Batch size, the number of dinosaur names in each batch
-       seq_length: Number of encoded chars in a sequence(fixed at 27)
+       arr: Array you want to make batches from
+       batch_size: Batch size, the number of sequences per batch
+       seq_length: Number of encoded chars in a sequence
     '''
 
 
-    n_batches  = int(input_arr.shape[0]/batch_size)    
+    batch_size_total = batch_size * seq_length
+    #total number of batches that can be made
+    n_batches = len(arr)//batch_size_total
+     
+    #Keep only enough chracters to make full batches
+    arr_1 = arr[:n_batches*batch_size_total]
+    #Retain rest of the charcaters
+    arr_2 = arr[n_batches*batch_size_total:]
     
-    for i in range(n_batches):
-        x = input_arr[i*batch_size:(i+1)*batch_size,:]
-        y = target_arr[i*batch_size:(i+1)*batch_size,:]
-        yield x,y
+    
+    #Reshape into batch_size number of rows.
+    arr_1 = arr_1.reshape((batch_size,-1))
+    
+    ##We can then step through the array, creating batches of the right seq_length
+    for n in range(0,arr_1.shape[1],seq_length):
+        #The features
+        x = arr_1[:,n:n+seq_length]
+        #The targets are same as x shifted by 1
+        y = np.zeros_like(x)
         
+        try:
+            y[:,:-1],y[:,-1] = x[:,1:],arr_1[:,n+seq_length]
+        except IndexError:
+            y[:,:-1],y[:,-1] = x[:,1:],arr_2[0]
+        
+        yield(x,y)
+    
     
     
 ####Define Neural  Net##########
@@ -166,30 +198,31 @@ class CharRNN(nn.Module):
     
     
  ###Below function borrowed from Udacity course   
-def train(net,epochs=10,batch_size =1, seq_length =27,lr =0.001,clip =5,print_every =10):
+def train(net,data,epochs=10,batch_size =10, seq_length =27,lr =0.001,clip =5,print_every =10,val_frac = 0.1):
     
     '''
-         net : CharRNN Network
-         input_data: text data to train network
-         target_data: text data to predict
-         epochs: No of epochs to train
-         batch_size : No of dinosaur names to train at a time
-         seq_length: No of character steps per batch(27)/dinosaur name
-         lr : Learning rate
+         net: CharRNN network
+         data: text data to train the network
+         epochs: Number of epochs to train
+         batch_size: Number of mini-sequences per mini-batch, aka batch size
+         seq_length: Number of character steps per mini-batch
+         lr: learning rate
          clip: gradient clipping
-         print_every: No of steps for printing and training and validation loss
+         val_frac: Fraction of data to hold out for validation
+         print_every: Number of steps for printing training and validation loss
     '''
-    
+    net.train()
     
     opt = torch.optim.Adam(net.parameters(),lr=lr)
     criterion = nn.CrossEntropyLoss()
     
-
+    #create training and valdiation data
+    val_idx = int(len(data)*(1-val_frac))
+    data , val_data = data[:val_idx],data[val_idx:]
     
     if(train_on_gpu):
         net.cuda()
     
-    net.train() # Set to training mode
     
     counter = 0
     
@@ -197,11 +230,10 @@ def train(net,epochs=10,batch_size =1, seq_length =27,lr =0.001,clip =5,print_ev
         #initialize hidden state
         h = net.init_hidden(batch_size)
         
-        for inputs,targets in train_loader:
-            inputs = inputs.numpy()
+        for inputs,targets in get_batches(data,batch_size,seq_length):
             inputs = one_hot_encoder.transform(inputs.reshape(-1,1)).toarray().reshape(batch_size,seq_length,-1)
-            #COnvert inputs back to Tesnor
-            inputs = torch.Tensor(inputs)
+            #Convert inputs back to Tensor
+            inputs,targets = torch.from_numpy(inputs).to(dtype =torch.float32), torch.from_numpy(targets).long().to(dtype = torch.int32)
             
             counter+=1
             
@@ -227,7 +259,7 @@ def train(net,epochs=10,batch_size =1, seq_length =27,lr =0.001,clip =5,print_ev
             loss.backward()
             
             #Perform gradient clipping to prevent gradient explosion
-            nn.utils.clip_grad_norm(net.parameters(),clip)
+            nn.utils.clip_grad_norm_(net.parameters(),clip)
             
             opt.step()
             
@@ -238,12 +270,12 @@ def train(net,epochs=10,batch_size =1, seq_length =27,lr =0.001,clip =5,print_ev
                 val_losses =[]
                 net.eval() # Set to evaluation mode
                 ##Get validation data
-                for inputs,targets in valid_loader:
-                    inputs = inputs.numpy()
+                for inputs,targets in get_batches(val_data,batch_size,seq_length):
+                    # One hot encode inputs
                     inputs = one_hot_encoder.transform(inputs.reshape(-1,1)).toarray().reshape(batch_size,seq_length,-1)
-                    #Convert inputs back to Tesnor
-                    inputs = torch.Tensor(inputs)
-                    
+                    # Convert to tensors
+                    inputs = torch.from_numpy(inputs).to(dtype =torch.float32)
+                    targets = torch.from_numpy(targets).long().to(dtype = torch.int32)
                 
             
                     ##Create new hidden state for each batch
@@ -268,7 +300,7 @@ def train(net,epochs=10,batch_size =1, seq_length =27,lr =0.001,clip =5,print_ev
                     
                     
  ####Instantiating the model##########
-n_hidden= 256
+n_hidden= 128
 n_layers =2
  
 net = CharRNN(chars,n_hidden,n_layers) 
@@ -276,8 +308,9 @@ net = CharRNN(chars,n_hidden,n_layers)
 
 ###############Train the model###################
 
-n_epochs = 20
-train(net,epochs= n_epochs,batch_size =batch_size, seq_length =27,lr =0.001,clip =5,print_every =10)
+n_epochs = 5
+train(net=net,data=dino_names_array,epochs= n_epochs,batch_size = 2, seq_length =27,lr =0.01,clip =5,print_every =10,
+      val_frac = 0.1)
 
  
 ############Save model for later use###########
