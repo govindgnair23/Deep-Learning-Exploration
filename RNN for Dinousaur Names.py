@@ -252,10 +252,10 @@ def train(net,data,epochs=10,batch_size =10, seq_length =27,lr =0.001,clip =5,pr
             #Get output from model
             
             output,h = net(inputs,h)
-            output = output.reshape(batch_size,seq_length,-1)
+            #output = output.reshape(batch_size,seq_length,-1)
             
             #Calculate loss and perform backprop
-            loss = criterion(output,targets)
+            loss = criterion(output,targets.view(batch_size*seq_length))
             loss.backward()
             
             #Perform gradient clipping to prevent gradient explosion
@@ -285,8 +285,8 @@ def train(net,data,epochs=10,batch_size =10, seq_length =27,lr =0.001,clip =5,pr
                         inputs,targets = inputs.cuda(), targets.cuda().long()
                         
                     output,val_h = net(inputs,val_h)
-                    output = output.reshape(batch_size,seq_length,-1)
-                    val_loss = criterion(output,targets)
+                    #output = output.reshape(batch_size,seq_length,-1)
+                    val_loss = criterion(output,targets.view(batch_size*seq_length))
                     
                     val_losses.append(val_loss)
                     
@@ -389,7 +389,7 @@ def sample(net,max_length =27,prime ='t', top_k =None):
     
     return ''.join(chars)
 
-print(sample(net,prime ='m',top_k =3))
+print(sample(net,prime ='b',top_k =3))
     
     
     
