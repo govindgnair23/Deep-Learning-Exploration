@@ -300,21 +300,21 @@ def train(net,data,epochs=10,batch_size =10, seq_length =27,lr =0.001,clip =5,pr
                     
                     
  ####Instantiating the model##########
-n_hidden= 128
+n_hidden= 256
 n_layers =2
  
-net = CharRNN(chars,n_hidden,n_layers) 
+net = CharRNN(chars,n_hidden,n_layers,drop_prob=0.5) 
 
 
 ###############Train the model###################
 
-n_epochs = 5
-train(net=net,data=dino_names_array,epochs= n_epochs,batch_size = 2, seq_length =27,lr =0.01,clip =5,print_every =10,
+n_epochs = 20
+train(net=net,data=dino_names_array,epochs= n_epochs,batch_size = 10, seq_length =15,lr =0.001,clip =5,print_every =10,
       val_frac = 0.1)
 
  
 ############Save model for later use###########
-model_name = 'char_rnn_20epoch.net'
+model_name = 'char_rnn_12epoch.net'
 
 checkpoint = {'n_hidden':net.n_hidden,
               'n_layers': net.n_layers,
@@ -389,7 +389,7 @@ def sample(net,max_length =27,prime ='t', top_k =None):
     
     return ''.join(chars)
 
-print(sample(net,prime ='b',top_k =3))
+print(sample(net,max_length =15,prime ='tyr',top_k =10))
     
     
     
