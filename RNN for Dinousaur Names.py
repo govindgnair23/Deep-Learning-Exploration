@@ -12,13 +12,14 @@ import torch
 #from torch.utils.data import TensorDataset, DataLoader
 import torch.nn.functional as F
 import os
+import random
 
 os.chdir('C:/Users/learningmachine/Documents/Learning and Development/Miscellaneous/Deep Learning Exploration/Character RNN')
 
 #############################Read in and process input data#################
 dino_names = open('dinos.txt','r').read()
 dino_names = dino_names.lower().split('\n')
-
+random.shuffle(dino_names)
 
 
 chars = list(set(''.join(dino_names))) + ['.'] # Period acts as <EOS> token
@@ -121,7 +122,7 @@ def get_valid_example():
 
 
     
-####Define Neural  Net##########
+####Define Neural  Net with LSTMS##########
         
 class CharRNN(nn.Module):
     
@@ -183,9 +184,52 @@ class CharRNN(nn.Module):
         
         return(hidden) 
     
+
+
+################Define a plain vanilla RNN####
+class CharRNN2(nn.Module):
+    def __init__(self,tokens,hidden_size,drop_prob = 0.1, lr = 0.001):
+        super(CharRNN2,self).__init__()
+        self.hidden_size = hidden_size
+        self.drop_prob = drop_prob
+        self.lr = lr
+        self.input_size = len(tokens)
+        self.output_size = len(tokens)
+        #creating character dictionaries
+        self.chars = tokens
+        self.int2char = {i:ch for i,ch in enumerate(sorted(chars))}
+        self.char2int = {ch:i for i,ch in enumerate(sorted(chars))}
+        
+        #Creating layers
+        self.i2h = nn.Linear(self.input_size+hidden_size,hidden_size)
+        self.i2o = nn.Linear(self.input_size+hidden_size,self.output_size)
+        self.o2o = nn.Linear(self.output_size + hidden_size, self.output_size)
+        self.dropout = nn.Dropout(drop_prob)
+        
+        
     
+    def forward(self,x,hidden):
+        input_combined = torch.cat((x,hidden),dim = 1)
+        hidden = self.i2h(input_combined)
+        output = self.i2o(input_combined)
+        output_combined = torch.cat((hidden,output),1)
+        output = self.o2o(output_combined,output)
+        output = self.dropout(output)
+        return(output,hidden)
+        
+    def init_hidden(self):
+        
+        if(train_on_gpu):
+            return(torch.zeros(1,self.hidden_size).cuda())
+        else:
+            return(torch.zeros(1,self.hidden_size))
+        
+
+
+
+
  ###Below function borrowed from Udacity course   
-def train(net,epochs=10,lr =0.001,clip =5,print_every =10):
+def train(net,epochs=10,lr =0.001,clip =5,print_every =10,model_type = 'SimpleRNN'):
     
     '''
          net : CharRNN Network
@@ -214,7 +258,8 @@ def train(net,epochs=10,lr =0.001,clip =5,print_every =10):
     
     for e in range(epochs):
         #initialize hidden state
-        h = net.init_hidden()
+        if(model_type != 'Simple_RNN'):
+            h = net.init_hidden()
         
         for inputs,targets in get_train_example():
             inputs = torch.from_numpy(inputs).unsqueeze(1).to(dtype =torch.float32)
@@ -230,14 +275,21 @@ def train(net,epochs=10,lr =0.001,clip =5,print_every =10):
                 
             ##Create new variables for hidden state as we don't
             ##want to backprop between batches
-            h = tuple([each.data for each in h])
+            
+            if(model_type == 'Simple_RNN'):
+                h = net.init_hidden()
+            else:
+                h = tuple([each.data for each in h])
             
             #zero accumulated gradients
             net.zero_grad()
             
             loss = 0
             for i in range(len(inputs[0])):
-                 input_i = inputs[i].unsqueeze(0) 
+                 if model_type == 'SimpleRNN':
+                     input_i = inputs[i]
+                 else:
+                    input_i = inputs[i].unsqueeze(0) 
                  output,h = net(input_i,h)
                  l = criterion(output,targets[i])
                  loss += l
@@ -252,7 +304,8 @@ def train(net,epochs=10,lr =0.001,clip =5,print_every =10):
             ##Get loss stats from validation data
             
             if counter%print_every==0:
-                val_h = net.init_hidden()
+                if(model_type != 'Simple_RNN'):
+                    val_h = net.init_hidden()
                 val_losses =[]
                 net.eval() # Set to evaluation mode
                 ##Get validation data
@@ -261,9 +314,11 @@ def train(net,epochs=10,lr =0.001,clip =5,print_every =10):
                     targets = torch.from_numpy(targets).unsqueeze(-1).long()
                     
                 
-            
+                    if(model_type == 'Simple_RNN'):
+                        val_h = net.init_hidden()
+                    else:
                     ##Create new hidden state for each batch
-                    val_h = tuple([each.data for each in val_h])
+                        val_h = tuple([each.data for each in val_h])
                     
                     if train_on_gpu:
                         inputs,targets = inputs.cuda(), targets.cuda().long()
@@ -271,10 +326,13 @@ def train(net,epochs=10,lr =0.001,clip =5,print_every =10):
                     val_loss = 0
                     
                     for i in range(len(inputs[0])):
-                         input_i = inputs[i].unsqueeze(0) 
-                         output,h = net(input_i,h)
-                         l = criterion(output,targets[i])
-                         val_loss += l
+                        if model_type == 'SimpleRNN':
+                            input_i = inputs[i]
+                        else:
+                            input_i = inputs[i].unsqueeze(0) 
+                        output,h = net(input_i,h)
+                        l = criterion(output,targets[i])
+                        val_loss += l
                          
                     val_losses.append(val_loss)
                     
@@ -296,7 +354,7 @@ net = CharRNN(chars,n_hidden,n_layers)
 
 ###############Train the model###################
 
-n_epochs = 1
+n_epochs = 20
 train(net,epochs= n_epochs,lr =0.001,clip =5,print_every =10)
 
  
@@ -313,7 +371,7 @@ with open(model_name,'wb') as f:
     
 ##################################################3
 ###Function to predict next character given an input character###
-## Returns the predicted charcater and hidden state##############
+## Returns the predicted character and hidden state##############
     
 def predict(net,char,h=None,top_k =None):
     
@@ -361,7 +419,7 @@ def sample(net,max_length =27,prime ='t', top_k =None):
     
     ##Run through priming characters
     chars = [ch for ch in prime]
-    h = net.init_hidden(1)
+    h = net.init_hidden()
     for ch in prime:
         char,h = predict(net,ch,h,top_k = top_k)
         
@@ -376,7 +434,7 @@ def sample(net,max_length =27,prime ='t', top_k =None):
     
     return ''.join(chars)
 
-print(sample(net,prime ='m',top_k =3))
+print(sample(net,max_length =10,prime ='m',top_k =3))
     
     
     
