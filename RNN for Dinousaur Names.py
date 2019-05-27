@@ -1,428 +1,706 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Wed Jan 30 19:26:02 2019
+###############Below code is based on the template from the book NLP with Pytorch#########
 
-@author: learningmachine
-"""
-##################Import required packages#################
+from argparse import Namespace
+from collections import Counter
 import numpy as np
-from sklearn.preprocessing import OneHotEncoder
-from torch import nn
+import pandas as pd
 import torch
-import torch.nn.functional as F
-from random import shuffle
-
-#############################Read in and process input data#################
-dino_names = open('dinos.txt','r').read()
-dino_names = dino_names.lower().split('\n')
-
-##Shuffle the list of names##
-shuffle(dino_names)
-
-#Use a period as end of name token .Join all names into a single mass of text
-dino_names = '.'.join(dino_names)
+import torch.nn as nn
+from torch.nn import functional as F
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
 
 
-chars = list(set(dino_names))
-data_size, vocab_size = len(dino_names),len(chars)
-print('There are %d total characters and %d unique characters in the data.'%(data_size,vocab_size))
-
-####Longest dinosaur name####
-#longest_name   = max(dino_names,key=len)
-#longest_name_len = len(longest_name)
-
-
-
-
-###Dictionaries mapping character to index and vice versa
-char_to_idx = {ch:i for i,ch in enumerate(sorted(chars))}
-ix_to_char =  {i:ch for i,ch in enumerate(sorted(chars))}
-print(ix_to_char)
-
-
-###Convert dino name text to encoded array###
-dino_names_array = np.array([char_to_idx[char] for char in dino_names ])
-
-
-
-###Using padding to ensure each dino name has same length of 27###
-
-#dino_name_deficit = [27 - len(dino) for dino in dino_names]
-#dino_names = [dino_name + '.'*extra_len for dino_name,extra_len in zip(dino_names,dino_name_deficit)]
-
-###Encoded version of dino names
-#encoded_dino_names = list(map(lambda x: [char_to_idx[char] for char in x], dino_names))
-#encoded_dino_array = np.array(encoded_dino_names)
-
-####Create one hot encoder for each character in the dictionary###
-one_hot_encoder = OneHotEncoder()
-one_hot_encoder.fit(np.array(list(char_to_idx.values())).reshape(-1,1))
-#one_hot_encoder.transform(np.array([1,2,3]).reshape(-1,1)).toarray()
-
-##Target is obtained by shifting the inputs forward by 1 time step###
-#input_arr = encoded_dino_array
-#target_arr =  np.column_stack((input_arr[:,1:],np.zeros(input_arr.shape[0]))).astype(int)
-
-#Create training and validation data
-#val_idx = int(len(input_arr)*(1-0.1))
-#train_X,train_y = input_arr[:val_idx],target_arr[:val_idx]
-#valid_X,valid_y = input_arr[val_idx:],target_arr[val_idx:]
-
-
-
-
-#print("\t\t Feature Shapes:")
-#print("Train_set:\t\t{}".format(train_X.shape))
-#print("\nValidation Set: \t{}".format(valid_X.shape))
-
-###DataLoaders and Batching
-#train_data = TensorDataset(torch.from_numpy(train_X),torch.from_numpy(train_y))
-#valid_data = TensorDataset(torch.from_numpy(valid_X),torch.from_numpy(valid_y))
-
-#batch_size = 2
-
-#train_loader = DataLoader(train_data,batch_size=batch_size)
-#valid_loader = DataLoader(valid_data,batch_size=batch_size)
-
-
-# check if GPU is available
-train_on_gpu = torch.cuda.is_available()
-
-###################Function to geenrate batches of inputs and targets#######################
-##########Function borrowed from Udacity - Intro to Pytorch course##########################
-
-def get_batches(arr, batch_size, seq_length):
-    
-    
-    '''Create a generator that returns batches of size
-       batch_size x seq_length from arr.
-       
-       Arguments
-       ---------
-       arr: Array you want to make batches from
-       batch_size: Batch size, the number of sequences per batch
-       seq_length: Number of encoded chars in a sequence
-    '''
-
-
-    batch_size_total = batch_size * seq_length
-    #total number of batches that can be made
-    n_batches = len(arr)//batch_size_total
-     
-    #Keep only enough chracters to make full batches
-    arr_1 = arr[:n_batches*batch_size_total]
-    #Retain rest of the charcaters
-    arr_2 = arr[n_batches*batch_size_total:]
-    
-    
-    #Reshape into batch_size number of rows.
-    arr_1 = arr_1.reshape((batch_size,-1))
-    
-    ##We can then step through the array, creating batches of the right seq_length
-    for n in range(0,arr_1.shape[1],seq_length):
-        #The features
-        x = arr_1[:,n:n+seq_length]
-        #The targets are same as x shifted by 1
-        y = np.zeros_like(x)
+####Create a vocabulary class for dinosaur names#######
+class Vocabulary(object):
+    """ Class to process text and extraxt vocabualary for mapping"""
+    def __init__(self,token_to_idx = None):
+        """
+        Args: 
+            token_to_idx (dict): a pre-existing map of tokens to indices
+        """
         
-        try:
-            y[:,:-1],y[:,-1] = x[:,1:],arr_1[:,n+seq_length]
-        except IndexError:
-            y[:,:-1],y[:,-1] = x[:,1:],arr_2[0]
+        if token_to_idx is None:
+            token_to_idx = {}
         
-        yield(x,y)
-    
-    
-    
-####Define Neural  Net##########
+        self._token_to_idx = token_to_idx
         
-class CharRNN(nn.Module):
-    
-    
-    def __init__(self,tokens,n_hidden=128,n_layers=2,drop_prob=0.25,lr=0.001):
-         super().__init__()
-         self.drop_prob = drop_prob
-         self.n_layers = n_layers
-         self.n_hidden = n_hidden
-         self.lr =lr
-         
-         #creating character dictionaries
-         self.chars = tokens
-         self.int2char = {i:ch for i,ch in enumerate(sorted(chars))}
-         self.char2int = {ch:i for i,ch in enumerate(sorted(chars))}
-         
-         ##Define LSTM
-         self.lstm = nn.LSTM(len(self.chars),n_hidden,n_layers,dropout = drop_prob,batch_first = True)
-         #Define a drop out layer
-         self.dropout = nn.Dropout(drop_prob)
-         ##Fully connected layer
-         self.fc = nn.Linear(n_hidden,len(self.chars))
-         
-        
-    def forward(self,x,hidden):
-        
-        ''' Forward pass through the network.
-            The inputs are x and the hidden cell/state  is hidden'''
-        
-        #Pass input and incoming hidden through lstm
-        lstm_out, hidden = self.lstm(x,hidden)
-        
-        #Pass through dropout layer
-        out = self.dropout(lstm_out)
-        
-        # Stack up LSTM outputs using view
-        out = lstm_out.contiguous().view(-1, self.n_hidden)
+        self._idx_to_token = {idx:token for token,idx in self._token_to_idx.items()}
         
         
-      
-        ###Pass through fully connected layer
-        out = self.fc(out)
-        
-        return(out,hidden)
-        
-        
-    
-    def init_hidden(self,batch_size):
-        '''Initalize hidden state'''
-        
-        weight = next(self.parameters()).data
-        
-        if(train_on_gpu):
-            hidden = (weight.new(self.n_layers,batch_size,self.n_hidden).zero_().cuda(),
-                       weight.new(self.n_layers,batch_size,self.n_hidden).zero_().cuda())
+    def add_token(self,token):
+        """Update mapping dicts based on the token.
+
+        Args:
+            token (str): the item to add into the Vocabulary
+        Returns:
+            index (int): the integer corresponding to the token
+        """
+        if token in self._token_to_idx:
+            index = self._token_to_idx[token]
         else:
-            hidden = (weight.new(self.n_layers, batch_size, self.n_hidden).zero_(),
-                      weight.new(self.n_layers, batch_size, self.n_hidden).zero_())
+            try:
+                index = max(self._token_to_idx.values())+1
+            except ValueError:
+                index = 0
+            self._token_to_idx[token] = index
+            self._idx_to_token[index] = token
         
-        return(hidden) 
+        return index
     
-    
- ###Below function borrowed from Udacity course   
-def train(net,data,epochs=10,batch_size =10, seq_length =27,lr =0.001,clip =5,print_every =10,val_frac = 0.1):
-    
-    '''
-         net: CharRNN network
-         data: text data to train the network
-         epochs: Number of epochs to train
-         batch_size: Number of mini-sequences per mini-batch, aka batch size
-         seq_length: Number of character steps per mini-batch
-         lr: learning rate
-         clip: gradient clipping
-         val_frac: Fraction of data to hold out for validation
-         print_every: Number of steps for printing training and validation loss
-    '''
-    net.train()
-    
-    opt = torch.optim.Adam(net.parameters(),lr=lr)
-    criterion = nn.CrossEntropyLoss()
-    
-    #create training and valdiation data
-    val_idx = int(len(data)*(1-val_frac))
-    data , val_data = data[:val_idx],data[val_idx:]
-    
-    if(train_on_gpu):
-        net.cuda()
-    
-    
-    counter = 0
-    
-    for e in range(epochs):
-        #initialize hidden state
-        h = net.init_hidden(batch_size)
+    def add_many(self,tokens):
+        """Add a list of tokens into the Vocabulary
         
-        for inputs,targets in get_batches(data,batch_size,seq_length):
-            inputs = one_hot_encoder.transform(inputs.reshape(-1,1)).toarray().reshape(batch_size,seq_length,-1)
-            #Convert inputs back to Tensor
-            inputs,targets = torch.from_numpy(inputs).to(dtype =torch.float32), torch.from_numpy(targets).long().to(dtype = torch.int32)
+        Args:
+            tokens (list): a list of string tokens
+        Returns:
+            indices (list): a list of indices corresponding to the tokens
+        """
+        return [self.add_token(token) for token in tokens]
+    
+    def lookup_token(self,token):
+        """Retrieve the index associated with the token 
+        
+        Args:
+            token (str): the token to look up 
+        Returns:
+            index (int): the index corresponding to the token
+        """
+        return self._token_to_idx[token]
+    
+    def lookup_index(self,index):
+        """Return the token associated with the index
+        
+        Args: 
+            index (int): the index to look up
+        Returns:
+            token (str): the token corresponding to the index
+        Raises:
+            KeyError: if the index is not in the Vocabulary
+        """
+        if index not in self._idx_to_token:
+            raise KeyError("the index(%d) is not in vocabulary" %index)
+        return self._idx_to_token[index]
+    
+    def __str__(self):
+        return "<Vocabulary(size=%d)>" % len(self)
+    
+    def __len__(self):
+        return len(self._token_to_idx)
+    
+    
+class SequenceVocabulary(Vocabulary):
+    def __init__(self,token_to_idx = None,unk_token="<UNK>",
+                 mask_token = "<MASK>",begin_seq_token = "<BEGIN>",
+                 end_seq_token = "<END>"):
+        super(SequenceVocabulary,self).__init__(token_to_idx)
+        
+        self._mask_token = mask_token
+        self._unk_token = unk_token
+        self._begin_seq_token = begin_seq_token
+        self._end_seq_token = end_seq_token
+        
+        
+        self.mask_index = self.add_token(self._mask_token)
+        self.unk_index = self.add_token(self._unk_token)
+        self.begin_seq_index = self.add_token(self._begin_seq_token)
+        self.end_seq_index = self.add_token(self._end_seq_token)
+        
+    
+    def lookup_token(self,token):
+        """Retrieve the index associated with the token 
+          or the UNK index if token isn't present.
+        
+        Args:
+            token (str): the token to look up 
+        Returns:
+            index (int): the index corresponding to the token
+        Notes:
+            `unk_index` needs to be >=0 (having been added into the Vocabulary) 
+              for the UNK functionality 
+        """
+        return self._token_to_idx.get(token,self.unk_index)
+    
+    
+#########################Vectorizer#######################
+class DinoNameVectorizer(object):
+    """ The Vectorizer which coordinates the Vocabularies and puts them to use""" 
+    def __init__(self,dino_sequence_vocab):
+        """
+        Args:
+            dino_sequence_vocab(SequenceVocabulary): maps characters to integers
+        """
+        
+        self.dino_sequence_vocab = dino_sequence_vocab
+        
+    def vectorize(self,dino_name,vector_length =-1):
+        """ Vectorize a dino name into a vector of observations and target
+        
+        The outputs are the vectorized surname split into two vectors:
+            surname[:-1] and surname[1:]
+        At each timestep, the first vector is the observation and the second vector is the target. 
+        
+        Args:
+            dino_name (str): the surname to be vectorized
+            vector_length (int): an argument for forcing the length of index vector
+        Returns:
+            a tuple: (from_vector, to_vector)
+            from_vector (numpy.ndarray): the observation vector 
+            to_vector (numpy.ndarray): the target prediction vector
+        """
+        indices = [self.dino_sequence_vocab.begin_seq_index]
+        indices.extend(self.dino_sequence_vocab.lookup_token(token) for token in dino_name)
+        indices.append(self.dino_sequence_vocab.end_seq_index)
+        
+        if vector_length < 0:
+            vector_length  = len(indices) - 1
             
-            counter+=1
+        from_vector = np.empty(vector_length,dtype = np.int64)
+        from_indices = indices[:-1]
+        from_vector[:len(from_indices)] = from_indices
+        from_vector[len(from_indices):] = self.dino_sequence_vocab.mask_index
+        
+        to_vector = np.empty(vector_length,dtype = np.int64)
+        to_indices = indices[1:]
+        to_vector[:len(to_indices)] = to_indices
+        to_vector[len(to_indices):] = self.dino_sequence_vocab.mask_index
+        
+        return from_vector,to_vector
+    
+    @classmethod
+    def from_dataframe(cls,dino_name_df):
+        """Instantiate the vectorizer from the dataset dataframe
+        
+        Args:
+            surname_df (pandas.DataFrame): the surname dataset
+        Returns:
+            an instance of the SurnameVectorizer
+        """
+        
+        dino_name_vocab = SequenceVocabulary()
+        
+        for index,row in dino_name_df.iterrows():
+            for char in row.DinoName:
+                dino_name_vocab.add_token(char)
+        
+        
+        return cls(dino_name_vocab)
+        
+#########################Dataset class#########################        
+
+class DinoNameDataset(Dataset):
+    def __init__(self,dino_name_df,vectorizer):
+        """
+        Args:
+                dino_name_df (pandas.DataFrame): the dataset
+                vectorizer (DinoNameSequenceVectorizer): vectorizer instatiated from dataset
+        """
+        
+        self.dino_name_df = dino_name_df
+        self._vectorizer = vectorizer
+        
+        self._max_seq_length = max(map(len,self.dino_name_df.DinoName))+2
+        
+        self.train_df = self.dino_name_df[self.dino_name_df.split == 'train']
+        self.train_size = len(self.train_df)
+        
+        self.valid_df = self.dino_name_df[self.dino_name_df.split == 'valid']
+        self.valid_size = len(self.train_df)
+
+
+        self._lookup_dict = {'train': (self.train_df,self.train_size),
+                             'val': (self.valid_df,self.valid_size)}
+        
+        self.set_split('train')
+        
+    
+    @classmethod
+    def load_dataset_and_make_vectorizer(cls,dino_name_txt):
+        """Load dataset and make a new vectorizer from scratch
+        
+        Args:
+            dino_name_txt (str): location of the dataset
+        Returns:
+            an instance of DinonameDataset
+        """
+        
+        dino_name_df = pd.read_csv(dino_name_txt,sep =" " ,header =None,names = ['DinoName']) 
+        #Convert all dino names to lower case
+        dino_name_df.DinoName = dino_name_df.DinoName.str.lower()
+        #Shuffle observations
+        dino_name_df.sample(frac = 1,random_state=1).reset_index(drop=True)
+        no_obs = dino_name_df.shape[0]
+        train_index = int(0.7 * dino_name_df.shape[0])
+        #Assign a train or valid tag
+        dino_name_df['split'] = ['train']*train_index + ['valid']*(no_obs - train_index)
+
+        return cls(dino_name_df,DinoNameVectorizer.from_dataframe(dino_name_df))
+
+
+    def get_vectorizer(self):
+        """ returns the vectorizer"""
+        return self._vectorizer
+    
+    def set_split(self, split = 'train'):
+        self._target_split = split
+        self._target_df, self._target_size  = self._lookup_dict[split]
+        
+    def __len__(self):
+        return self._target_size
+    
+    def __getitem__(self,index):
+        """
+        the primary entrypoint method for Pytorch datasets
+        
+        Args:
+            index(int): the index to a datapoint
+        
+        Returns:
+            a dictionary holding the data point: (x_data, y_target, class_index)
             
-            
+        """
+        
+        row = self._target_df.iloc[index]
+        
+        from_vector, to_vector = self._vectorizer.vectorize(row.DinoName,self._max_seq_length)
+        
+        
+        return {'x_data': from_vector,
+                'y_target': to_vector}
+        
+    
+    def get_num_batches(self,batch_size):
+        """Given a batch size, return the number of batches in the dataset
+        
+        Args:
+            batch_size (int)
+        Returns:
+            number of batches in the dataset
+        """
+        
+        return len(self)//batch_size
+    
+
+def generate_batches(dataset,batch_size,shuffle=True,drop_last = True,device='cpu'):
+    """
+    A generator function which wraps the PyTorch DataLoader. It will 
+      ensure each tensor is on the write device location.
+    """
+    
+    dataloader = DataLoader(dataset=dataset,batch_size =batch_size,
+                            shuffle=shuffle,drop_last = drop_last)
+    
+    for data_dict in dataloader:
+        out_data_dict = {}
+        for name,tensor in data_dict.items():
+            out_data_dict[name] = tensor.to(device)
+        
+        yield out_data_dict
+        
+    
+########Model to generate dinosaur names##########    
+    
+class DinoNameGeneratorModel(nn.Module):
+    def __init__(self,char_embedding_size,dino_vocab_size,rnn_hidden_size,
+                 batch_first = True, padding_idx=0,dropout_p =0.5):
+        """
+        Args:
+            char_embedding_size (int): The size of the character embeddings
+            dino_vocab_size (int): The number of characters to embed
+            rnn_hidden_size (int): The size of the RNN's hidden state
+            batch_first (bool): Informs whether the input tensors will 
+                have batch or the sequence on the 0th dimension
+            padding_idx (int): The index for the tensor padding; 
+                see torch.nn.Embedding
+            dropout_p (float): the probability of zeroing activations using
+                the dropout method.  higher means more likely to zero.
+        """
+        
+        super(DinoNameGeneratorModel,self).__init__()
+        
+        self.char_emb = nn.Embedding(num_embeddings = dino_vocab_size,
+                                     embedding_dim = char_embedding_size,
+                                     padding_idx = padding_idx)
+        
+        self.rnn = nn.GRU(input_size = char_embedding_size,
+                          hidden_size = rnn_hidden_size,
+                          batch_first = batch_first)
+        
+        self.fc = nn.Linear(in_features = rnn_hidden_size,
+                            out_features = dino_vocab_size)
+        
+        self.dropout_p = dropout_p
+        
+    def forward(self,x_in,apply_softmax = False):
+        """ The forward pass of the model
+        
+        Args:
+            x_in(torch.Tensor): an input data tensor. 
+                x_in.shape should be (batch, input_dim)
+            apply_softmax (bool): a flag for the softmax activation
+                should be false if used with the Cross Entropy losses
                 
-            if (train_on_gpu):
-                inputs, targets = inputs.cuda(),targets.cuda().long()
+        Returns:
+            the resulting tensor. tensor.shape should be (batch, char_vocab_size)
+        """  
+        x_embedded = self.char_emb(x_in)
+        
+        y_out, _ = self.rnn(x_embedded)
+        
+        batch_size,seq_size,feat_size = y_out.shape
+        
+        y_out = y_out.contiguous().view(batch_size*seq_size,feat_size)
+        
+        y_out = self.fc(F.dropout(y_out,p = self.dropout_p))
+        
+        if apply_softmax :
+            y_out = F.softmax(y_out,dim =1)
+            
+        new_feat_size = y_out.shape[-1]
+        y_out = y_out.view(batch_size,seq_size,new_feat_size)
+        
+        return y_out
+        
                 
-            ##Create new variables for hidden state as we don't
-            ##want to backprop between batches
-            h = tuple([each.data for each in h])
+#####Helper functions#######
+def make_train_state(args):
+    return {'stop_early': False,
+            'early_stopping_step': 0,
+            'early_stopping_best_val': 1e8,
+            'learning_rate': args.learning_rate,
+            'epoch_index': 0,
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': [],
+            'model_filename': args.model_state_file}
+    
+    
+def update_train_state(args,model,train_state):
+    """Handle the training state updates.
+    Components:
+     - Early Stopping: Prevent overfitting.
+     - Model Checkpoint: Model is saved if the model is better
+    
+    :param args: main arguments
+    :param model: model to train
+    :param train_state: a dictionary representing the training state values
+    :returns:
+        a new train_state
+    """
+    #Save one model atleast
+    if train_state['epoch_index']== 0:
+        torch.save(model.state_dict(),train_state['model_filename'])
+        train_state['stop_early'] == False
+    #Save model if performance improved   
+    elif train_state['epoch_index'] >= 1:
+        loss_tm1,loss_t = train_state['val_loss'][-2:]
+        
+        # If loss worsened
+        if loss_t >= loss_tm1:
+            train_state['early_stopping_step'] +=1
+         
+        #Loss decreased
+        else:
+            #Save the best model
+            if loss_t < train_state['early_stoping_best_val']:
+                torch.save(model.state_dict(),train_state['model_filename'])
+                train_state['early_stopping_best_val'] = loss_t
+                
+            #Reset early stopping step
+            train_state['early_stopping_step'] = 0
+        
+        #Stop early?
+        train_state['stop_early'] = train_state['early_stopping_step'] >= args.early_stopping_criteria
+        
+        
+def normalize_sizes(y_pred,y_true):
+    """Normalize tensor sizes
+    
+    Args:
+        y_pred (torch.Tensor): the output of the model
+            If a 3-dimensional tensor, reshapes to a matrix
+        y_true (torch.Tensor): the target predictions
+            If a matrix, reshapes to be a vector
+    """
+    
+    if len(y_pred.size()) == 3:
+        y_pred = y_pred.contiguous().view(-1,y_pred.size(2))
+    if len(y_true.size()) == 2:
+        y_true = y_true.contiguous().view(-1)
+    
+    
+    return y_pred,y_true
+
+def compute_accuracy(y_pred,y_true,mask_index):
+    y_pred,y_true = normalize_sizes(y_pred,y_true)
+    
+    _,y_pred_indices = y_pred.max(dim=1)
+    
+    correct_indices = torch.eq(y_pred_indices,y_true).float()
+    valid_indices = torch.ne(correct_indices,mask_index).float()
+    
+    n_correct = (correct_indices*valid_indices).sum().item()
+    n_valid = valid_indices.sum().item()
+    
+    return n_correct/n_valid * 100
+
+def sequence_loss(y_pred,y_true,mask_index):
+    y_pred,y_true = normalize_sizes(y_pred,y_true)
+    return F.cross_entropy(y_pred,y_true,ignore_index = mask_index)
+
+
+#########Utility Functions###
+def set_seed_everywhere(seed,cuda):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if cuda:
+        torch.cuda.manual_seed_all(seed)
+        
+###Settings and prep work####
+args = Namespace(
+            # Data and Path information
+            dino_name_txt="data/dinos.txt",
+            vectorizer_file="vectorizer.json",
+            model_state_file="model.pth",
+            save_dir="model_storage",
+            # Model hyper parameters
+            char_embedding_size=32,
+            rnn_hidden_size=32,
+            # Training hyper parameters
+            seed=1337,
+            learning_rate=0.001,
+            batch_size=64,
+            num_epochs=20,
+            early_stopping_criteria=5,
+            # Runtime options
+            catch_keyboard_interrupt=True,
+            cuda=True
+        )
+
+args.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+########Initalizations
+
+
+#Create dataset and vectorizer
+dataset = DinoNameDataset.load_dataset_and_make_vectorizer(args.dino_name_txt)
+vectorizer = dataset.get_vectorizer()
+        
+        
+model = DinoNameGeneratorModel(char_embedding_size = args.char_embedding_size,
+                               dino_vocab_size = len(vectorizer.dino_sequence_vocab),
+                               rnn_hidden_size = args.rnn_hidden_size,
+                               batch_first = True,
+                               padding_idx=vectorizer.dino_sequence_vocab.mask_index,
+                               dropout_p =0.5) 
+    
+    
+########Training Loop##########
+mask_index = vectorizer.dino_sequence_vocab.mask_index    
+
+model.to(args.device)
+
+optimizer = optim.Adam(model.parameters(),lr = args.learning_rate)    
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer = optimizer,
+                                                 mode='min',
+                                                 factor = 0.5,
+                                                 patience =1)    
+    
+    
+train_state = make_train_state(args)    
+
+epoch_bar = tqdm(desc= "Training Routine",
+                 total = args.num_epochs,
+                 position = 0)
+
+dataset.set_split('train')    
+train_bar = tqdm(desc ='split=train',
+                 total = dataset.get_num_batches(args.batch_size),
+                 position =1,
+                 leave = True)
+    
+dataset.set_split('val')    
+train_bar = tqdm(desc ='split=val',
+                 total = dataset.get_num_batches(args.batch_size),
+                 position =1,
+                 leave = True)
+    
+    
+###############Training##############
+
+try: 
+    for epoch_index in range(args.num_epochs):
+        train_state['epoch_index'] = epoch_index
+        
+        #Iterate over training set
+        # setup: batch generator, set loss and acc to 0, set train mode on
+        dataset.set_split('train')
+        batch_generator = generate_batches(dataset,
+                                           batch_size = args.batch_size,
+                                           device = args.device)
+        
+        
+        running_loss = 0.0
+        running_acc = 0.0
+        model.train()
+        
+        
+        for batch_index,batch_dict in enumerate(batch_generator):
             
-            #zero accumulated gradients
-            net.zero_grad()
+            #step 1. Zero the gradients
+            optimizer.zero_grad()
             
-            #Get output from model
+            #Step 2: Compute the output
+            y_pred = model(x_in=batch_dict['x_data'])
             
-            output,h = net(inputs,h)
-            #output = output.reshape(batch_size,seq_length,-1)
+            #Step 3: Compute the loss
+            loss = sequence_loss(y_pred,batch_dict['y_target'],mask_index)
             
-            #Calculate loss and perform backprop
-            loss = criterion(output,targets.view(batch_size*seq_length))
+            #Step 4: Use loss to produce gradients
             loss.backward()
             
-            #Perform gradient clipping to prevent gradient explosion
-            nn.utils.clip_grad_norm_(net.parameters(),clip)
+            #Step 5: Use optimizer to take gradient step
+            optimizer.step()
             
-            opt.step()
+            #Compute running loss and accuracy
             
-            ##Get loss stats from validation data
+            running_loss += (loss.item() - running_loss) / (batch_index + 1)
+            acc_t = compute_accuracy(y_pred,batch_dict['y_target'],mask_index)
+            running_acc += (acc_t - running_acc)/(batch_index + 1)
             
-            if counter%print_every==0:
-                val_h = net.init_hidden(batch_size)
-                val_losses =[]
-                net.eval() # Set to evaluation mode
-                ##Get validation data
-                for inputs,targets in get_batches(val_data,batch_size,seq_length):
-                    # One hot encode inputs
-                    inputs = one_hot_encoder.transform(inputs.reshape(-1,1)).toarray().reshape(batch_size,seq_length,-1)
-                    # Convert to tensors
-                    inputs = torch.from_numpy(inputs).to(dtype =torch.float32)
-                    targets = torch.from_numpy(targets).long().to(dtype = torch.int32)
-                
+            #update bar
+            train_bar.set_postfix(loss = running_loss,
+                                  acc = running_acc,
+                                  epoch = epoch_index)
             
-                    ##Create new hidden state for each batch
-                    val_h = tuple([each.data for each in val_h])
-                    
-                    if train_on_gpu:
-                        inputs,targets = inputs.cuda(), targets.cuda().long()
-                        
-                    output,val_h = net(inputs,val_h)
-                    #output = output.reshape(batch_size,seq_length,-1)
-                    val_loss = criterion(output,targets.view(batch_size*seq_length))
-                    
-                    val_losses.append(val_loss)
-                    
-                
-                net.train()
-                
-                print("Epoch: {}/{}...".format(e+1, epochs),
-                      "Step: {}...".format(counter),
-                      "Loss: {:.4f}...".format(loss.item()),
-                      "Val Loss: {:.4f}".format(np.mean([x.item() for x in val_losses])))
-                    
-                    
- ####Instantiating the model##########
-n_hidden= 256
-n_layers =2
- 
-net = CharRNN(chars,n_hidden,n_layers,drop_prob=0.5) 
-
-
-###############Train the model###################
-
-n_epochs = 20
-train(net=net,data=dino_names_array,epochs= n_epochs,batch_size = 10, seq_length =15,lr =0.001,clip =5,print_every =10,
-      val_frac = 0.1)
-
- 
-############Save model for later use###########
-model_name = 'char_rnn_12epoch.net'
-
-checkpoint = {'n_hidden':net.n_hidden,
-              'n_layers': net.n_layers,
-              'state_dict':net.state_dict(),
-              'tokens': net.chars}
-
-with open(model_name,'wb') as f:
-    torch.save(checkpoint,f)
-    
-##################################################3
-###Function to predict next character given an input character###
-## Returns the predicted charcater and hidden state##############
-    
-def predict(net,char,h=None,top_k =None):
-    
-    #Get inputs in one hot encoded tensor form
-    x = np.array([[net.char2int[char]]])
-    x = one_hot_encoder.transform(x).toarray()
-    inputs = torch.from_numpy(x).unsqueeze(1).to(dtype = torch.float32)
-    
-    if(train_on_gpu): 
-        inputs = inputs.cuda()
+            train_bar.update()
+            
+        train_state['train_loss'].append(running_loss)
+        train_state['train_acc'].append(running_acc)
         
-    #detach hidden state from history
-    h = tuple(each.data for each in h)
-    #Get output of the model
-    out,h = net(inputs,h)
+        # Iterate over val dataset
 
-    #Get charcater probabilties
-    p = F.softmax(out,dim=1).data
-    if(train_on_gpu): 
-        p = p.cpu() # move to cpu
+        # setup: batch generator, set loss and acc to 0; set eval mode on
+        dataset.set_split('val')
+        batch_generator = generate_batches(dataset,
+                                           batch_size = args.batch_size,
+                                           device = args.device)
         
-    #get top characters
-    if top_k is None:
-        top_ch = np.arange(len(net.chars))
-    else: 
-        p, top_ch = p.topk(top_k)
-        top_ch = top_ch.numpy().squeeze()
+        running_loss = 0.0
+        running_acc = 0.0
+        model.eval()
         
-    # select next likely character
-    p = p.numpy().squeeze()
-    char = np.random.choice(top_ch,p = p/p.sum())
+        for batch_index,batch_dict in enumerate(batch_generator):
+            #compute the output
+            y_pred = model(x_in = batch_dict['x_data'])
+            
+            #Compute the loss
+            loss = sequence_loss(y_pred,batch_dict['y_target'],mask_index)
+            
+            running_loss += (loss.item() - running_loss) / (batch_index + 1)
+            acc_t = compute_accuracy(y_pred,batch_dict['y_target'],mask_index)
+            running_acc += (acc_t - running_acc)/(batch_index + 1)
+            
+            #update bar
+            val_bar.set_postfix(loss = running_loss,
+                                acc = running_acc,
+                                epoch = epoch_index)
+            
+            val_bar.update()
+            
+        train_state['val_loss'].append(running_loss)
+        train_state['val_acc'].append(running_acc)
+        
+        train_state = update_train_state(args=args,model = model,
+                                         train_state = train_state)
+        
+        scheduler.step(train_state['val_loss'][-1])
+        
+        if train_state['stop_early']:
+            break
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+            
+            
+            
+            
+            
+            
     
-    #return enocded value of next character and hidden state
-    return(net.int2char[char],h)
     
 
-###Priming and generating text###
-def sample(net,max_length =27,prime ='t', top_k =None): 
-    if(train_on_gpu):
-        net.cuda()
-    else:
-        net.cpu()
         
-    net.eval() #eval mode
-    
-    ##Run through priming characters
-    chars = [ch for ch in prime]
-    h = net.init_hidden(1)
-    for ch in prime:
-        char,h = predict(net,ch,h,top_k = top_k)
         
-    chars.append(char)
-    
-    ii = len(prime) # Length of dinosaur name
-    ##Now pass in previous charcaters to get new one
-    while(char != "." and ii <= max_length):
-        char,ch = predict(net,chars[-1],h, top_k = top_k)
-        chars.append(char)
-        ii +=1
-    
-    return ''.join(chars)
-
-print(sample(net,max_length =15,prime ='tyr',top_k =10))
-    
-    
-    
         
-    
+        
+        
+        
+        
         
         
     
-    
-    
-    
-    
-    
-         
-         
+
+
+
+        
+        
+        
         
         
             
     
- 
+        
+        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#dino_df = pd.read_csv('dinos.txt',sep =" " ,header =None,names = ['DinoName'])        
+        
+        
+            
+            
+        
+        
+        
     
-    
-    
-    
-
-
-
-
-
-
-
-
-
+        
+        
+        
+        
+        
+                    
+            
+        
 
 
 
