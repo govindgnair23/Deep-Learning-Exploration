@@ -205,7 +205,7 @@ class DinoNameDataset(Dataset):
         self.train_df = self.dino_name_df[self.dino_name_df.split == 'train']
         self.train_size = len(self.train_df)
         
-        self.valid_df = self.dino_name_df[self.dino_name_df.split == 'valid']
+        self.valid_df = self.dino_name_df[self.dino_name_df.split == 'val']
         self.valid_size = len(self.train_df)
 
 
@@ -233,7 +233,7 @@ class DinoNameDataset(Dataset):
         no_obs = dino_name_df.shape[0]
         train_index = int(0.7 * dino_name_df.shape[0])
         #Assign a train or valid tag
-        dino_name_df['split'] = ['train']*train_index + ['valid']*(no_obs - train_index)
+        dino_name_df['split'] = ['train']*train_index + ['val']*(no_obs - train_index)
 
         return cls(dino_name_df,DinoNameVectorizer.from_dataframe(dino_name_df))
 
@@ -244,7 +244,8 @@ class DinoNameDataset(Dataset):
     
     def set_split(self, split = 'train'):
         self._target_split = split
-        self._target_df, self._target_size  = self._lookup_dict[split]
+        target_df, self._target_size  = self._lookup_dict[split]
+        self._target_df = target_df.reset_index(drop=True)
         
     def __len__(self):
         return self._target_size
@@ -294,7 +295,7 @@ def generate_batches(dataset,batch_size,shuffle=True,drop_last = True,device='cp
     for data_dict in dataloader:
         out_data_dict = {}
         for name,tensor in data_dict.items():
-            out_data_dict[name] = tensor.to(device)
+            out_data_dict[name] = data_dict[name].to(device)
         
         yield out_data_dict
         
@@ -361,7 +362,72 @@ class DinoNameGeneratorModel(nn.Module):
         y_out = y_out.view(batch_size,seq_size,new_feat_size)
         
         return y_out
+
+
+#########Function to sample from model############3
+def sample_from_model(model,vectorizer,num_samples=1,sample_size=20,temperature = 1.0):
+    
+    """Sample a sequence of indices from the model
+    
+    Args:
+        model (SurnameGenerationModel): the trained model
+        vectorizer (SurnameVectorizer): the corresponding vectorizer
+        num_samples (int): the number of samples
+        sample_size (int): the max length of the samples
+        temperature (float): accentuates or flattens 
+            the distribution. 
+            0.0 < temperature < 1.0 will make it peakier. 
+            temperature > 1.0 will make it more uniform
+    Returns:
+        indices (torch.Tensor): the matrix of indices; 
+        shape = (num_samples, sample_size)
+    """
+    begin_seq_index = [vectorizer.dino_sequence_vocab.begin_seq_index for 
+                               _ in range(num_samples)]
+    
+    begin_seq_index = torch.tensor(begin_seq_index,dtype = torch.int64).unsqueeze(dim=1)
+    indices = [begin_seq_index]
+    h_t = None
+    
+    for time_step in range(sample_size):
+        x_t = indices[time_step]
+        x_emb_t = model.char_emb(x_t)
+        rnn_out_t, h_t = model.rnn(x_emb_t,h_t)
+        prediction_vector = model.fc(rnn_out_t.squeeze(dim=1))
+        probability_vector = F.softmax(prediction_vector/temperature,dim = 1)
+        indices.append(torch.multinomial(probability_vector,num_samples = 1))
+    
+    indices = torch.stack(indices).squeeze().permute(1,0)
+    return indices
+
+def decode_samples(sampled_indices,vectorizer):
+    """Transform indices into the string form of a surname
+    
+    Args:
+        sampled_indices (torch.Tensor): the inidces from `sample_from_model`
+        vectorizer (SurnameVectorizer): the corresponding vectorizer
+    """
+    
+    decoded_dino_names = []
+    vocab = vectorizer.dino_sequence_vocab
+    
+    for sample_index in range(sampled_indices.shape(0)):
+        dino_name = ""
+        for time_step in range(sampled_indices.shape(1)):
+            sample_item = sampled_indices[sample_index,time_step].item()
+            if sample_item == vocab.begin_seq_index:
+                continue
+            if sample_item == vocab.end_seq_index:
+                break
+            else:
+                dino_name += vocab.lookup_index(sample_item)
         
+        decoded_dino_names.append(dino_name)
+    
+    return decoded_dino_names
+
+    
+
                 
 #####Helper functions#######
 def make_train_state(args):
@@ -483,7 +549,7 @@ args.device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 ########Initalizations
-
+set_seed_everywhere(args.seed,args.cuda)
 
 #Create dataset and vectorizer
 dataset = DinoNameDataset.load_dataset_and_make_vectorizer(args.dino_name_txt)
@@ -523,7 +589,7 @@ train_bar = tqdm(desc ='split=train',
                  leave = True)
     
 dataset.set_split('val')    
-train_bar = tqdm(desc ='split=val',
+val_bar = tqdm(desc ='split=val',
                  total = dataset.get_num_batches(args.batch_size),
                  position =1,
                  leave = True)
@@ -621,6 +687,24 @@ try:
         
         if train_state['stop_early']:
             break
+        
+        #move model to cpu for sampling
+        model = model.cpu()
+        sampled_dino_names = decode_samples(
+                            sample_from_model(model,vectorizer,num_samples=2),vectorizer)
+        
+        epoch_bar.set_postfix(sample1 = sampled_dino_names[0],
+                              sample2 = sampled_dino_names[1])
+        
+        #move model back to right device foe training
+        model = model.to(args.device)
+        
+        train_bar.n = 0 
+        val_bar.n = 0
+        epoch_bar.update()
+        
+except KeyboardInterrupt:
+    print("Exiting Loop")
         
         
         
