@@ -10,6 +10,7 @@ from torch.nn import functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+import random
 
 
 ####Create a vocabulary class for dinosaur names#######
@@ -206,7 +207,7 @@ class DinoNameDataset(Dataset):
         self.train_size = len(self.train_df)
         
         self.valid_df = self.dino_name_df[self.dino_name_df.split == 'val']
-        self.valid_size = len(self.train_df)
+        self.valid_size = len(self.valid_df)
 
 
         self._lookup_dict = {'train': (self.train_df,self.train_size),
@@ -226,14 +227,18 @@ class DinoNameDataset(Dataset):
         """
         
         dino_name_df = pd.read_csv(dino_name_txt,sep =" " ,header =None,names = ['DinoName']) 
-        #Convert all dino names to lower case
-        dino_name_df.DinoName = dino_name_df.DinoName.str.lower()
+        #Convert all dino names to lower case and add to a list
+        dino_names =  dino_name_df.DinoName.str.lower().tolist()
+
         #Shuffle observations
-        dino_name_df.sample(frac = 1,random_state=1).reset_index(drop=True)
-        no_obs = dino_name_df.shape[0]
-        train_index = int(0.7 * dino_name_df.shape[0])
+        random.shuffle(dino_names)
+        
+        no_obs =  len(dino_names)
+        train_index = int(0.7 * no_obs)
         #Assign a train or valid tag
-        dino_name_df['split'] = ['train']*train_index + ['val']*(no_obs - train_index)
+        split  = ['train']*train_index + ['val']*(no_obs - train_index)
+
+        dino_name_df = pd.DataFrame({'DinoName':dino_names,'split':split})
 
         return cls(dino_name_df,DinoNameVectorizer.from_dataframe(dino_name_df))
 
@@ -411,9 +416,9 @@ def decode_samples(sampled_indices,vectorizer):
     decoded_dino_names = []
     vocab = vectorizer.dino_sequence_vocab
     
-    for sample_index in range(sampled_indices.shape(0)):
+    for sample_index in range(sampled_indices.shape[0]):
         dino_name = ""
-        for time_step in range(sampled_indices.shape(1)):
+        for time_step in range(sampled_indices.shape[1]):
             sample_item = sampled_indices[sample_index,time_step].item()
             if sample_item == vocab.begin_seq_index:
                 continue
@@ -429,19 +434,7 @@ def decode_samples(sampled_indices,vectorizer):
     
 
                 
-#####Helper functions#######
-def make_train_state(args):
-    return {'stop_early': False,
-            'early_stopping_step': 0,
-            'early_stopping_best_val': 1e8,
-            'learning_rate': args.learning_rate,
-            'epoch_index': 0,
-            'train_loss': [],
-            'train_acc': [],
-            'val_loss': [],
-            'val_acc': [],
-            'model_filename': args.model_state_file}
-    
+
     
 def update_train_state(args,model,train_state):
     """Handle the training state updates.
@@ -470,7 +463,7 @@ def update_train_state(args,model,train_state):
         #Loss decreased
         else:
             #Save the best model
-            if loss_t < train_state['early_stoping_best_val']:
+            if loss_t < train_state['early_stopping_best_val']:
                 torch.save(model.state_dict(),train_state['model_filename'])
                 train_state['early_stopping_best_val'] = loss_t
                 
@@ -479,6 +472,9 @@ def update_train_state(args,model,train_state):
         
         #Stop early?
         train_state['stop_early'] = train_state['early_stopping_step'] >= args.early_stopping_criteria
+        
+    
+    return train_state  
         
         
 def normalize_sizes(y_pred,y_true):
@@ -538,7 +534,7 @@ args = Namespace(
             seed=1337,
             learning_rate=0.001,
             batch_size=64,
-            num_epochs=20,
+            num_epochs=100,
             early_stopping_criteria=5,
             # Runtime options
             catch_keyboard_interrupt=True,
@@ -547,7 +543,20 @@ args = Namespace(
 
 args.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-
+#####Helper functions#######
+def make_train_state(args):
+    return {'stop_early': False,
+            'early_stopping_step': 0,
+            'early_stopping_best_val': 1e8,
+            'learning_rate': args.learning_rate,
+            'epoch_index': 0,
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': [],
+            'model_filename': args.model_state_file}
+    
+    
 ########Initalizations
 set_seed_everywhere(args.seed,args.cuda)
 
@@ -706,6 +715,15 @@ try:
 except KeyboardInterrupt:
     print("Exiting Loop")
         
+###########Inference - Generate dinosaur names###########
+num_names = 10
+model = model.cpu()
+
+####sample dinosaur names####
+sampled_surnames = decode_samples(sample_from_model(model,vectorizer,num_samples=num_names),
+                                 vectorizer)
+
+
         
         
         
